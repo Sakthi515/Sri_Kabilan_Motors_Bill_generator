@@ -1,7 +1,8 @@
 
 import os
 import re
-from datetime import date
+import sqlite3
+from datetime import date, datetime
 
 import streamlit as st
 from reportlab.lib import colors
@@ -87,6 +88,88 @@ def safe_filename(value):
     value = str(value).strip()
     value = re.sub(r'[\\/:*?"<>|]', "_", value)
     return value or "bill"
+
+
+# ============================================================
+# BILL HISTORY DATABASE
+# ============================================================
+
+DB_PATH = os.path.join(BASE_DIR, "billing_history.db")
+
+
+def get_db_connection():
+    connection = sqlite3.connect(DB_PATH, check_same_thread=False)
+    connection.row_factory = sqlite3.Row
+    return connection
+
+
+def initialize_database():
+    with get_db_connection() as connection:
+        connection.execute("""
+            CREATE TABLE IF NOT EXISTS bills (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                bill_type TEXT NOT NULL,
+                bill_number TEXT NOT NULL,
+                customer_name TEXT NOT NULL,
+                mobile TEXT,
+                bill_date TEXT NOT NULL,
+                total_amount REAL NOT NULL,
+                taxable_amount REAL NOT NULL,
+                gst_amount REAL NOT NULL,
+                pdf_blob BLOB NOT NULL,
+                created_at TEXT NOT NULL,
+                UNIQUE(bill_type, bill_number)
+            )
+        """)
+        connection.commit()
+
+
+def save_bill_record(bill_type, bill_number, customer_name, mobile, bill_date,
+                     total_amount, taxable_amount, gst_amount, pdf_bytes):
+    with get_db_connection() as connection:
+        connection.execute("""
+            INSERT INTO bills (
+                bill_type, bill_number, customer_name, mobile, bill_date,
+                total_amount, taxable_amount, gst_amount, pdf_blob, created_at
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            ON CONFLICT(bill_type, bill_number) DO UPDATE SET
+                customer_name=excluded.customer_name,
+                mobile=excluded.mobile,
+                bill_date=excluded.bill_date,
+                total_amount=excluded.total_amount,
+                taxable_amount=excluded.taxable_amount,
+                gst_amount=excluded.gst_amount,
+                pdf_blob=excluded.pdf_blob,
+                created_at=excluded.created_at
+        """, (
+            bill_type, bill_number, customer_name, mobile, bill_date,
+            total_amount, taxable_amount, gst_amount, sqlite3.Binary(pdf_bytes),
+            datetime.now().isoformat(timespec="seconds")
+        ))
+        connection.commit()
+
+
+def fetch_month_bills(month_value):
+    month_key = month_value.strftime("%Y-%m")
+    with get_db_connection() as connection:
+        return connection.execute("""
+            SELECT id, bill_type, bill_number, customer_name, mobile, bill_date,
+                   total_amount, taxable_amount, gst_amount
+            FROM bills
+            WHERE substr(bill_date, 1, 7) = ?
+            ORDER BY bill_date DESC, id DESC
+        """, (month_key,)).fetchall()
+
+
+def fetch_bill_pdf(record_id):
+    with get_db_connection() as connection:
+        return connection.execute(
+            "SELECT bill_type, bill_number, pdf_blob FROM bills WHERE id = ?",
+            (record_id,)
+        ).fetchone()
+
+
+initialize_database()
 
 
 def number_to_words(number):
@@ -739,16 +822,100 @@ with st.sidebar:
 
 st.markdown(
     '<div class="brand-header"><h1>🛵 SRI KABILAN MOTORS</h1>'
-    '<p>Professional Billing Suite · Create invoices and quotations with product, GST and warranty details.</p></div>',
+    '<p>Professional Billing Suite · Invoices, quotations and bill history.</p></div>',
     unsafe_allow_html=True,
 )
 
-st.markdown('<div class="section-kicker">WORKSPACE</div>', unsafe_allow_html=True)
-st.info(
-    "Create an invoice with GST calculation or a quotation without GST. "
-    "Add products, review or edit them, then generate a PDF for download and printing."
-)
+# Top-right document shortcuts
+left_space, quotation_col, invoice_col = st.columns([6, 2, 2])
+with quotation_col:
+    if st.button("📄 Quotation", use_container_width=True):
+        st.session_state.selected_bill_type = "QUOTATION"
+        st.session_state.document_type_selector = "QUOTATION"
+        st.rerun()
+with invoice_col:
+    if st.button("＋ New Bill (Tax Invoice)", type="primary", use_container_width=True):
+        st.session_state.selected_bill_type = "INVOICE"
+        st.session_state.document_type_selector = "INVOICE"
+        st.rerun()
 
+# Monthly dashboard
+st.markdown("## 📊 This Month Overview")
+month_col, _ = st.columns([2, 5])
+with month_col:
+    report_month = st.date_input(
+        "Select month",
+        value=date.today().replace(day=1),
+        help="Choose any date in the month you want to review.",
+        key="dashboard_report_month",
+    )
+month_bills = fetch_month_bills(report_month)
+month_invoice = [row for row in month_bills if row["bill_type"] == "INVOICE"]
+month_quotation = [row for row in month_bills if row["bill_type"] == "QUOTATION"]
+month_total = sum(float(row["total_amount"] or 0) for row in month_invoice)
+month_taxable = sum(float(row["taxable_amount"] or 0) for row in month_invoice)
+month_gst = sum(float(row["gst_amount"] or 0) for row in month_invoice)
+metric1, metric2, metric3, metric4 = st.columns(4)
+metric1.metric("Bills Generated", len(month_invoice))
+metric2.metric("Total Invoice Amount", f"₹{month_total:,.2f}")
+metric3.metric("Taxable Value", f"₹{month_taxable:,.2f}")
+metric4.metric("Total GST", f"₹{month_gst:,.2f}")
+st.caption(f"Also generated: {len(month_quotation)} quotation(s) · Amounts above include tax invoices only.")
+
+# Bill history table
+st.markdown("## 🧾 Bill Details – This Month")
+search_bill = st.text_input(
+    "Search bills",
+    placeholder="Search by bill number, customer name or phone number...",
+    key="bill_history_search",
+)
+filtered_bills = [row for row in month_bills if (
+    search_bill.strip().lower() in " ".join([
+        str(row["bill_number"] or ""), str(row["customer_name"] or ""),
+        str(row["mobile"] or "")
+    ]).lower()
+)] if search_bill.strip() else month_bills
+
+if filtered_bills:
+    header_cols = st.columns([0.45, 1.15, 1.45, 1.2, 1.0, 1.0, 0.85])
+    for header_col, heading in zip(header_cols, ["#", "Bill No", "Customer Name", "Phone No", "Bill Type", "Amount (₹)", "Action"]):
+        header_col.markdown(f"**{heading}**")
+    st.divider()
+    for row in filtered_bills:
+        row_cols = st.columns([0.45, 1.15, 1.45, 1.2, 1.0, 1.0, 0.85])
+        row_cols[0].write(str(row["id"]))
+        row_cols[1].write(str(row["bill_number"]))
+        row_cols[2].write(str(row["customer_name"]))
+        row_cols[3].write(str(row["mobile"] or "—"))
+        row_cols[4].write("Quotation" if row["bill_type"] == "QUOTATION" else "Tax Invoice")
+        row_cols[5].write(f'₹{float(row["total_amount"]):,.2f}')
+        if row_cols[6].button("👁 View", key=f'view_bill_{row["id"]}', use_container_width=True):
+            st.session_state.view_bill_record_id = int(row["id"])
+    st.caption(f"Showing {len(filtered_bills)} of {len(month_bills)} document(s) for {report_month.strftime('%B %Y')}.")
+else:
+    st.info("No bills or quotations found for this month yet. Generated documents will appear here.")
+
+if st.session_state.get("view_bill_record_id"):
+    viewed_record = fetch_bill_pdf(st.session_state.view_bill_record_id)
+    if viewed_record:
+        st.markdown("### 📄 Selected bill")
+        st.caption(f'{viewed_record["bill_type"].title()} · {viewed_record["bill_number"]}')
+        st.download_button(
+            "⬇️ Download / View PDF",
+            data=bytes(viewed_record["pdf_blob"]),
+            file_name=f'{safe_filename(viewed_record["bill_number"])}.pdf',
+            mime="application/pdf",
+            key=f'download_viewed_{st.session_state.view_bill_record_id}',
+        )
+    else:
+        st.warning("This bill record could not be found.")
+
+st.divider()
+st.markdown("## ✍️ Create a Document")
+st.info(
+    "Choose Quotation or New Bill (Tax Invoice) from the top-right buttons. "
+    "Add products, review or edit them, then generate the PDF."
+)
 
 # ============================================================
 # GST EXAMPLE
@@ -809,10 +976,16 @@ st.caption("Choose the document type, number, date and payment method.")
 col1, col2, col3 = st.columns(3)
 
 with col1:
+    if "selected_bill_type" not in st.session_state:
+        st.session_state.selected_bill_type = "INVOICE"
     bill_type = st.selectbox(
         "Bill Type",
-        ["QUOTATION", "INVOICE"],
+        ["INVOICE", "QUOTATION"],
+        index=0 if st.session_state.selected_bill_type == "INVOICE" else 1,
+        format_func=lambda value: "Tax Invoice" if value == "INVOICE" else "Quotation",
+        key="document_type_selector",
     )
+    st.session_state.selected_bill_type = bill_type
 
 with col2:
     bill_number = st.text_input(
@@ -1173,6 +1346,20 @@ if st.session_state.manual_items:
 
                     with open(pdf_file, "rb") as file:
                         pdf_bytes = file.read()
+
+                    saved_taxable = subtotal if bill_type == "INVOICE" else grand_total
+                    saved_gst = round(cgst + sgst, 2) if bill_type == "INVOICE" else 0.0
+                    save_bill_record(
+                        bill_type=bill_type,
+                        bill_number=bill_number.strip(),
+                        customer_name=customer_name.strip(),
+                        mobile=mobile.strip(),
+                        bill_date=bill_date.strftime("%Y-%m-%d"),
+                        total_amount=grand_total,
+                        taxable_amount=saved_taxable,
+                        gst_amount=saved_gst,
+                        pdf_bytes=pdf_bytes,
+                    )
                     st.session_state.generated_pdf_bytes = pdf_bytes
                     st.session_state.generated_pdf_name = os.path.basename(pdf_file)
 
@@ -1186,9 +1373,8 @@ if st.session_state.manual_items:
                     )
                     st.caption("Need to correct an item or price? Use the Edit Item section above, save the change, then click GENERATE BILL PDF again. The PDF file itself is a final document; edits are made here and a fresh PDF is generated.")
 
-                    st.info(
-                        f"PDF saved in: {BILL_FOLDER}"
-                    )
+                    st.success("Bill details and PDF saved to bill history on this app instance.")
+                    st.caption("Use the Bill Details section above to find and download this document later.")
 
                 except Exception as error:
                     st.error(
