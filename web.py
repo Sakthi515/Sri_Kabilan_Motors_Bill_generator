@@ -341,13 +341,20 @@ def create_bill_pdf(bill_type, bill_number, bill_date, customer_name, customer_a
         if item.get("bill_format") == "Bike Bill":
             details += f"<br/><b>Company:</b> {item['company_name']}"
             details += f"<br/><b>Model:</b> {item['model_no']}"
-            for label, key in [("Colour", "colour"), ("Battery Type", "battery_type"),
-                               ("Battery Specification", "battery_spec"), ("Battery Warranty", "battery_warranty"),
-                               ("Charger Warranty", "charger_warranty"), ("Charge Time", "charge_time"),
-                               ("Load Capacity", "load_capacity"), ("Chassis No", "chassis_no"),
-                               ("Motor No", "motor_no"), ("Charger No", "charger_no"),
-                               ("Battery No", "battery_no")]:
-                value = bike.get(key, "")
+            details += "<br/><b>Motor / Controller Warranty:</b> 12 months"
+            battery_warranty = "; ".join(
+                f"{label}: {bike.get(key, 0)} months" for label, key in
+                [("Replacement", "battery_replacement_months"), ("Pro-rata service", "battery_prorata_months")]
+                if bike.get(key, 0))
+            charger_warranty = "; ".join(
+                f"{label}: {bike.get(key, 0)} months" for label, key in
+                [("Replacement", "charger_replacement_months"), ("Pro-rata service", "charger_prorata_months")]
+                if bike.get(key, 0))
+            for label, value in [("Colour", bike.get("colour", "")), ("Chassis Number", bike.get("chassis_no", "")),
+                                 ("Motor Number", bike.get("motor_no", "")), ("Battery Type", bike.get("battery_type", "")),
+                                 ("Battery Number", bike.get("battery_no", "")), ("Battery Warranty", battery_warranty),
+                                 ("Charger Name", bike.get("charger_name", "")), ("Charger Number", bike.get("charger_no", "")),
+                                 ("Charger Warranty", charger_warranty)]:
                 if value:
                     details += f"<br/><b>{label}:</b> {value}"
         if item["company_name"].strip():
@@ -359,8 +366,10 @@ def create_bill_pdf(bill_type, bill_number, bill_date, customer_name, customer_a
         if warranty:
             details += f"<br/><b>Warranty:</b><br/>{warranty}"
         table_data.append([
-            str(index), Paragraph(details, small_style), item["hsn"], str(item["quantity"]),
-            f"{item['unit_price']:,.2f}", f"{item['gross_amount']:,.2f}",
+            str(index), Paragraph(details, small_style), item["hsn"],
+            "" if item.get("no_quantity") else str(item["quantity"]),
+            "" if item.get("no_quantity") else f"{item['unit_price']:,.2f}",
+            f"{item['gross_amount']:,.2f}",
         ])
     while len(table_data) < 8:
         table_data.append(["", Spacer(1, 7 * mm), "", "", "", ""])
@@ -873,33 +882,39 @@ def page_create(bill_type):
         description = st.text_input("Description", placeholder="Example: E-Cart Charger")
         c1, c2 = st.columns(2)
         company_name = c1.text_input("Company Name", placeholder="Example: Pelletronic")
-        model_no = c2.text_input("Model No", placeholder="Example: PPP48/15MC")
+        model_no = c2.text_input("Bike Model" if bill_format == "Bike Bill" else "Model No",
+                                 placeholder="Enter bike model" if bill_format == "Bike Bill" else "Example: PPP48/15MC")
         bike_details = {}
         if bill_format == "Bike Bill":
             st.markdown("**Electric bike / scooter details**")
             row1 = st.columns(3)
             bike_details["colour"] = row1[0].text_input("Colour", placeholder="Grey")
-            bike_details["battery_type"] = row1[1].text_input("Battery Type", placeholder="Lithium Ion (LFP)")
-            bike_details["battery_spec"] = row1[2].text_input("Battery Voltage / Capacity", placeholder="51.2V / 30Ah")
-            row2 = st.columns(3)
-            bike_details["battery_warranty"] = row2[0].text_input("Battery Warranty", placeholder="24 months full replacement; 12 months pro-rata")
-            bike_details["charger_warranty"] = row2[1].text_input("Charger Warranty", placeholder="Enter warranty")
-            bike_details["charge_time"] = row2[2].text_input("Charge Time", placeholder="4 to 5.5 hours")
+            bike_details["chassis_no"] = row1[1].text_input("Chassis Number")
+            bike_details["motor_no"] = row1[2].text_input("Motor Number")
+            st.caption("Motor and controller warranty: 1 year")
+            row2 = st.columns(2)
+            bike_details["battery_type"] = row2[0].text_input("Battery Type", placeholder="Lithium Ion (LFP)")
+            bike_details["battery_no"] = row2[1].text_input("Battery Number")
             row3 = st.columns(3)
-            bike_details["load_capacity"] = row3[0].text_input("Load Capacity", placeholder="150 kg")
-            bike_details["chassis_no"] = row3[1].text_input("Chassis Number")
-            bike_details["motor_no"] = row3[2].text_input("Motor Number")
-            row4 = st.columns(2)
-            bike_details["charger_no"] = row4[0].text_input("Charger Number")
-            bike_details["battery_no"] = row4[1].text_input("Battery Number")
-        c1, c2 = st.columns(2)
-        with c1:
-            warranty_type_1 = st.text_input("Warranty Type 1", value="Replacement")
-            warranty_months_1 = st.number_input("Warranty Type 1 - Months", min_value=0, value=3, step=1)
-        with c2:
-            warranty_type_2 = st.text_input("Warranty Type 2", value="Pro-rata Service")
-            warranty_months_2 = st.number_input("Warranty Type 2 - Months", min_value=0, value=9, step=1)
-        st.success(f"Total Warranty: **{warranty_months_1 + warranty_months_2} Months**")
+            bike_details["battery_replacement_months"] = row3[0].number_input("Battery replacement warranty (months)", min_value=0, value=24, step=1)
+            bike_details["battery_prorata_months"] = row3[1].number_input("Battery pro-rata service (months)", min_value=0, value=12, step=1)
+            row4 = st.columns(3)
+            bike_details["charger_name"] = row4[0].text_input("Charger Name")
+            bike_details["charger_no"] = row4[1].text_input("Charger Number")
+            row5 = st.columns(2)
+            bike_details["charger_replacement_months"] = row5[0].number_input("Charger replacement warranty (months)", min_value=0, value=0, step=1)
+            bike_details["charger_prorata_months"] = row5[1].number_input("Charger pro-rata service (months)", min_value=0, value=0, step=1)
+            warranty_type_1, warranty_months_1 = "", 0
+            warranty_type_2, warranty_months_2 = "", 0
+        else:
+            c1, c2 = st.columns(2)
+            with c1:
+                warranty_type_1 = st.text_input("Warranty Type 1", value="Replacement")
+                warranty_months_1 = st.number_input("Warranty Type 1 - Months", min_value=0, value=3, step=1)
+            with c2:
+                warranty_type_2 = st.text_input("Warranty Type 2", value="Pro-rata Service")
+                warranty_months_2 = st.number_input("Warranty Type 2 - Months", min_value=0, value=9, step=1)
+            st.success(f"Total Warranty: **{warranty_months_1 + warranty_months_2} Months**")
         c1, c2, c3 = st.columns(3)
         hsn = c1.text_input("HSN / SAC", placeholder="Enter HSN/SAC")
         quantity = c2.number_input("Quantity", min_value=1, value=1, step=1)
@@ -918,7 +933,15 @@ def page_create(bill_type):
                     bill_format=bill_format, bike_details=bike_details))
                 st.success(f"{description} added successfully.")
 
-    items = st.session_state.manual_items
+    items = list(st.session_state.manual_items)
+    service_charge = 0.0
+    if bill_format == "Spare Bill":
+        service_charge = st.number_input("Service Charge (no quantity)", min_value=0.0, value=0.0,
+                                         step=50.0, key=f"service_charge_{bill_type.lower()}")
+        if service_charge > 0:
+            service_item = calculate_item("Service Charge", "", "", "", 0, "", 0, 1, "", service_charge)
+            service_item["no_quantity"] = True
+            items.append(service_item)
     if not items:
         st.info("Add at least one product / spare / bike / charger / service.")
         return
@@ -941,6 +964,8 @@ def page_create(bill_type):
         st.dataframe(display, use_container_width=True, hide_index=True)
 
         for idx, item in enumerate(items):
+            if item.get("no_quantity"):
+                continue
             with st.expander(f"✏️ Edit Item {idx + 1}: {item['description']}"):
                 c1, c2 = st.columns(2)
                 with c1:
@@ -959,18 +984,17 @@ def page_create(bill_type):
                 edited_bike = dict(item.get("bike_details", {}))
                 if item.get("bill_format") == "Bike Bill":
                     st.caption("Bike details")
-                    bike_fields = [
-                        ("colour", "Colour"), ("battery_type", "Battery Type"),
-                        ("battery_spec", "Battery Voltage / Capacity"), ("battery_warranty", "Battery Warranty"),
-                        ("charger_warranty", "Charger Warranty"), ("charge_time", "Charge Time"),
-                        ("load_capacity", "Load Capacity"), ("chassis_no", "Chassis Number"),
-                        ("motor_no", "Motor Number"), ("charger_no", "Charger Number"),
-                        ("battery_no", "Battery Number"),
-                    ]
+                    bike_fields = ["colour", "chassis_no", "motor_no", "battery_type", "battery_no", "charger_name", "charger_no"]
                     bike_cols = st.columns(3)
-                    for field_index, (field_key, field_label) in enumerate(bike_fields):
+                    for field_index, field_key in enumerate(bike_fields):
                         edited_bike[field_key] = bike_cols[field_index % 3].text_input(
-                            field_label, value=edited_bike.get(field_key, ""), key=f"edit_bike_{field_key}_{idx}")
+                            field_key.replace("_", " ").title(), value=edited_bike.get(field_key, ""), key=f"edit_bike_{field_key}_{idx}")
+                    for warranty_key, label in [("battery_replacement_months", "Battery replacement months"),
+                                                ("battery_prorata_months", "Battery pro-rata months"),
+                                                ("charger_replacement_months", "Charger replacement months"),
+                                                ("charger_prorata_months", "Charger pro-rata months")]:
+                        edited_bike[warranty_key] = st.number_input(label, min_value=0,
+                            value=int(edited_bike.get(warranty_key, 0)), step=1, key=f"edit_bike_{warranty_key}_{idx}")
                 st.caption(f"Updated line amount preview: ₹{e_qty * e_price:,.2f}")
                 b1, b2 = st.columns(2)
                 if b1.button("💾 Save Item Changes", key=f"save_item_{idx}", type="primary"):
