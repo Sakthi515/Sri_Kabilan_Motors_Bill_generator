@@ -239,13 +239,14 @@ def calculate_gst_inclusive(total_inclusive, gst_rate):
 
 def calculate_item(description, company_name, model_no, warranty_type_1,
                    warranty_months_1, warranty_type_2, warranty_months_2,
-                   quantity, hsn, unit_price):
+                   quantity, hsn, unit_price, bill_format="Spare Bill", bike_details=None):
     return {
         "description": description, "company_name": company_name, "model_no": model_no,
         "warranty_type_1": warranty_type_1, "warranty_months_1": warranty_months_1,
         "warranty_type_2": warranty_type_2, "warranty_months_2": warranty_months_2,
         "quantity": quantity, "hsn": hsn, "unit_price": unit_price,
         "gross_amount": round(quantity * unit_price, 2),
+        "bill_format": bill_format, "bike_details": bike_details or {},
     }
 
 
@@ -336,9 +337,23 @@ def create_bill_pdf(bill_type, bill_number, bill_date, customer_name, customer_a
     ]]
     for index, item in enumerate(items, start=1):
         details = f"<b>{item['description']}</b>"
-        if item["company_name"].strip():
+        bike = item.get("bike_details", {})
+        if item.get("bill_format") == "Bike Bill":
             details += f"<br/><b>Company:</b> {item['company_name']}"
-        if item["model_no"].strip():
+            details += f"<br/><b>Model:</b> {item['model_no']}"
+            for label, key in [("Colour", "colour"), ("Battery Type", "battery_type"),
+                               ("Battery Specification", "battery_spec"), ("Battery Warranty", "battery_warranty"),
+                               ("Charger Warranty", "charger_warranty"), ("Charge Time", "charge_time"),
+                               ("Load Capacity", "load_capacity"), ("Chassis No", "chassis_no"),
+                               ("Motor No", "motor_no"), ("Charger No", "charger_no"),
+                               ("Battery No", "battery_no")]:
+                value = bike.get(key, "")
+                if value:
+                    details += f"<br/><b>{label}:</b> {value}"
+        if item["company_name"].strip():
+            if item.get("bill_format") != "Bike Bill":
+                details += f"<br/><b>Company:</b> {item['company_name']}"
+        if item["model_no"].strip() and item.get("bill_format") != "Bike Bill":
             details += f"<br/><b>Model No:</b> {item['model_no']}"
         warranty = warranty_text(item)
         if warranty:
@@ -853,10 +868,30 @@ def page_create(bill_type):
     with st.container(key="card_item"):
         st.markdown('<div class="card-title">📦 Add Products or Services</div>', unsafe_allow_html=True)
         st.caption("Only Description and Price are required. Fill the warranty fields when the item has warranty.")
+        bill_format = st.radio("Bill format", ["Spare Bill", "Bike Bill"], horizontal=True,
+                               key=f"format_{bill_type.lower()}")
         description = st.text_input("Description", placeholder="Example: E-Cart Charger")
         c1, c2 = st.columns(2)
         company_name = c1.text_input("Company Name", placeholder="Example: Pelletronic")
         model_no = c2.text_input("Model No", placeholder="Example: PPP48/15MC")
+        bike_details = {}
+        if bill_format == "Bike Bill":
+            st.markdown("**Electric bike / scooter details**")
+            row1 = st.columns(3)
+            bike_details["colour"] = row1[0].text_input("Colour", placeholder="Grey")
+            bike_details["battery_type"] = row1[1].text_input("Battery Type", placeholder="Lithium Ion (LFP)")
+            bike_details["battery_spec"] = row1[2].text_input("Battery Voltage / Capacity", placeholder="51.2V / 30Ah")
+            row2 = st.columns(3)
+            bike_details["battery_warranty"] = row2[0].text_input("Battery Warranty", placeholder="24 months full replacement; 12 months pro-rata")
+            bike_details["charger_warranty"] = row2[1].text_input("Charger Warranty", placeholder="Enter warranty")
+            bike_details["charge_time"] = row2[2].text_input("Charge Time", placeholder="4 to 5.5 hours")
+            row3 = st.columns(3)
+            bike_details["load_capacity"] = row3[0].text_input("Load Capacity", placeholder="150 kg")
+            bike_details["chassis_no"] = row3[1].text_input("Chassis Number")
+            bike_details["motor_no"] = row3[2].text_input("Motor Number")
+            row4 = st.columns(2)
+            bike_details["charger_no"] = row4[0].text_input("Charger Number")
+            bike_details["battery_no"] = row4[1].text_input("Battery Number")
         c1, c2 = st.columns(2)
         with c1:
             warranty_type_1 = st.text_input("Warranty Type 1", value="Replacement")
@@ -879,7 +914,8 @@ def page_create(bill_type):
                 st.session_state.manual_items.append(calculate_item(
                     description.strip(), company_name.strip(), model_no.strip(),
                     warranty_type_1.strip(), warranty_months_1, warranty_type_2.strip(),
-                    warranty_months_2, quantity, hsn.strip(), unit_price))
+                    warranty_months_2, quantity, hsn.strip(), unit_price,
+                    bill_format=bill_format, bike_details=bike_details))
                 st.success(f"{description} added successfully.")
 
     items = st.session_state.manual_items
@@ -920,6 +956,21 @@ def page_create(bill_type):
                     e_wm1 = st.number_input("Warranty Type 1 - Months", min_value=0, value=int(item["warranty_months_1"]), step=1, key=f"edit_wm1_{idx}")
                     e_wt2 = st.text_input("Warranty Type 2", value=item["warranty_type_2"], key=f"edit_wt2_{idx}")
                     e_wm2 = st.number_input("Warranty Type 2 - Months", min_value=0, value=int(item["warranty_months_2"]), step=1, key=f"edit_wm2_{idx}")
+                edited_bike = dict(item.get("bike_details", {}))
+                if item.get("bill_format") == "Bike Bill":
+                    st.caption("Bike details")
+                    bike_fields = [
+                        ("colour", "Colour"), ("battery_type", "Battery Type"),
+                        ("battery_spec", "Battery Voltage / Capacity"), ("battery_warranty", "Battery Warranty"),
+                        ("charger_warranty", "Charger Warranty"), ("charge_time", "Charge Time"),
+                        ("load_capacity", "Load Capacity"), ("chassis_no", "Chassis Number"),
+                        ("motor_no", "Motor Number"), ("charger_no", "Charger Number"),
+                        ("battery_no", "Battery Number"),
+                    ]
+                    bike_cols = st.columns(3)
+                    for field_index, (field_key, field_label) in enumerate(bike_fields):
+                        edited_bike[field_key] = bike_cols[field_index % 3].text_input(
+                            field_label, value=edited_bike.get(field_key, ""), key=f"edit_bike_{field_key}_{idx}")
                 st.caption(f"Updated line amount preview: ₹{e_qty * e_price:,.2f}")
                 b1, b2 = st.columns(2)
                 if b1.button("💾 Save Item Changes", key=f"save_item_{idx}", type="primary"):
@@ -928,7 +979,9 @@ def page_create(bill_type):
                     else:
                         items[idx] = calculate_item(e_desc.strip(), e_company.strip(), e_model.strip(),
                                                     e_wt1.strip(), e_wm1, e_wt2.strip(), e_wm2,
-                                                    e_qty, e_hsn.strip(), e_price)
+                                                    e_qty, e_hsn.strip(), e_price,
+                                                    bill_format=item.get("bill_format", "Spare Bill"),
+                                                    bike_details=edited_bike)
                         st.session_state.pop("generated_pdf_bytes", None)
                         st.rerun()
                 if b2.button("🗑️ Delete This Item", key=f"delete_item_{idx}"):
